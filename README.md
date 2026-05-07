@@ -31,17 +31,22 @@ Edit `vm_inventory.csv` with your real VM names. Three columns are required:
 |---|---|
 | `vm_name` | VM display name exactly as it appears in vCenter |
 | `datacenter` | Datacenter name the VM belongs to |
+| `folder` | VM folder path in vCenter, e.g. `/DatacenterName/vm` or `/DatacenterName/vm/subfolder` |
 | `vcenter` | Hostname or IP of the vCenter that manages this VM — must match exactly what you type at the prompt |
 
 **Example:**
 
 ```csv
-vm_name,datacenter,vcenter
-web-server-01,DatacenterA,us1sitvmw01v.company.com
-db-server-01,DatacenterA,us1sitvmw01v.company.com
-app-server-01,DatacenterB,us2sitvmw01v.company.com
-db-server-11,DatacenterB,us2sitvmw01v.company.com
+vm_name,datacenter,folder,vcenter
+web-server-01,DatacenterA,/DatacenterA/vm,us1sitvmw01v.company.com
+db-server-01,DatacenterA,/DatacenterA/vm,us1sitvmw01v.company.com
+app-server-01,DatacenterB,/DatacenterB/vm,us2sitvmw01v.company.com
+db-server-11,DatacenterB,/DatacenterB/vm,us2sitvmw01v.company.com
 ```
+
+For your environment, the folder path follows the pattern `/<DatacenterName>/vm`.
+If VMs are in a subfolder (e.g. "Servers"), it would be `/<DatacenterName>/vm/Servers`.
+You can verify the exact path in the vCenter UI under Inventory > VMs and Templates.
 
 The sample `vm_inventory.csv` ships with 100 VMs — 50 per vCenter using
 placeholder hostnames `vc1.example.com` and `vc2.example.com`.

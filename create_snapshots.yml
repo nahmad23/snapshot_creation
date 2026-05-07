@@ -76,12 +76,13 @@
     - name: Validate CSV has required columns
       ansible.builtin.fail:
         msg: >
-          CSV is missing required columns. Required: vm_name, datacenter, vcenter.
+          CSV is missing required columns. Required: vm_name, datacenter, folder, vcenter.
           Found: {{ vm_csv.list[0].keys() | list }}
       when: >
         vm_csv.list | length == 0 or
         'vm_name' not in vm_csv.list[0] or
         'datacenter' not in vm_csv.list[0] or
+        'folder' not in vm_csv.list[0] or
         'vcenter' not in vm_csv.list[0]
 
     - name: Split VMs by vCenter
@@ -149,6 +150,7 @@
         password: "{{ vc1.password }}"
         validate_certs: false
         datacenter: "{{ item.datacenter }}"
+        folder: "{{ item.folder }}"
         name: "{{ item.vm_name }}"
         state: present
         snapshot_name: "{{ snap_name }}"
@@ -221,6 +223,7 @@
         password: "{{ vc2.password }}"
         validate_certs: false
         datacenter: "{{ item.datacenter }}"
+        folder: "{{ item.folder }}"
         name: "{{ item.vm_name }}"
         state: present
         snapshot_name: "{{ snap_name }}"
