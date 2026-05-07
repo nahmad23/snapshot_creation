@@ -1,10 +1,15 @@
 ---
 # Playbook: create_snapshots.yml
-# Creates VM snapshots across two vCenter servers.
-# Snapshots are fired asynchronously (batch_size at a time) so 100 VMs
-# across two vCenters complete in minutes rather than hours.
+# Reads VM inventory from vm_inventory.csv and creates snapshots on two
+# vCenter servers. Snapshots run asynchronously in batches so 100 VMs
+# finish in minutes rather than hours.
+#
+# CSV columns required:
+#   vm_name    - VM display name in vCenter
+#   datacenter - Datacenter the VM belongs to
+#   vcenter    - Must be exactly "vcenter1" or "vcenter2"
 
-- name: Gather snapshot parameters
+- name: Gather snapshot parameters and load CSV inventory
   hosts: localhost
   gather_facts: false
 
@@ -43,33 +48,86 @@
       private: false
       default: "Automated snapshot before change"
 
+    - name: csv_file
+      prompt: "Path to VM inventory CSV file"
+      private: false
+      default: "vm_inventory.csv"
+
   vars:
-    # Max concurrent snapshot tasks per vCenter.
-    # vCenter typically handles 10-20 concurrent snapshot ops safely.
+    # Max concurrent snapshot tasks submitted per vCenter before a 1s pause.
+    # vCenter safely handles 10-20 concurrent snapshot operations.
     batch_size: 10
 
   tasks:
-    - name: Store vCenter 1 credentials
+    - name: Validate CSV file exists
+      ansible.builtin.stat:
+        path: "{{ csv_file }}"
+      register: csv_stat
+
+    - name: Abort if CSV file not found
+      ansible.builtin.fail:
+        msg: "CSV file '{{ csv_file }}' not found. Please check the path."
+      when: not csv_stat.stat.exists
+
+    - name: Load VM inventory from CSV
+      community.general.read_csv:
+        path: "{{ csv_file }}"
+      register: vm_csv
+
+    - name: Validate CSV has required columns
+      ansible.builtin.fail:
+        msg: >
+          CSV is missing required columns. Required: vm_name, datacenter, vcenter.
+          Found: {{ vm_csv.list[0].keys() | list }}
+      when: >
+        vm_csv.list | length == 0 or
+        'vm_name' not in vm_csv.list[0] or
+        'datacenter' not in vm_csv.list[0] or
+        'vcenter' not in vm_csv.list[0]
+
+    - name: Split VMs by vCenter
+      ansible.builtin.set_fact:
+        vc1_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', 'vcenter1') | list }}"
+        vc2_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', 'vcenter2') | list }}"
+
+    - name: Show inventory summary
+      ansible.builtin.debug:
+        msg:
+          - "CSV loaded: {{ vm_csv.list | length }} total VMs"
+          - "  vCenter 1 ({{ vcenter1_host }}): {{ vc1_vms | length }} VMs"
+          - "  vCenter 2 ({{ vcenter2_host }}): {{ vc2_vms | length }} VMs"
+
+    - name: Warn about rows with unrecognised vcenter value
+      ansible.builtin.debug:
+        msg: >
+          WARNING: {{ skipped | length }} row(s) skipped — vcenter column value
+          is not 'vcenter1' or 'vcenter2': {{ skipped | map(attribute='vm_name') | list }}
+      vars:
+        skipped: >-
+          {{ vm_csv.list
+             | rejectattr('vcenter', 'equalto', 'vcenter1')
+             | rejectattr('vcenter', 'equalto', 'vcenter2')
+             | list }}
+      when: >
+        vm_csv.list
+        | rejectattr('vcenter', 'equalto', 'vcenter1')
+        | rejectattr('vcenter', 'equalto', 'vcenter2')
+        | list | length > 0
+
+    - name: Store credentials and snapshot metadata
       ansible.builtin.set_fact:
         vc1:
           host: "{{ vcenter1_host }}"
           user: "{{ vcenter1_user }}"
           password: "{{ vcenter1_password }}"
-        cacheable: false
-
-    - name: Store vCenter 2 credentials
-      ansible.builtin.set_fact:
         vc2:
           host: "{{ vcenter2_host }}"
           user: "{{ vcenter2_user }}"
           password: "{{ vcenter2_password }}"
-        cacheable: false
-
-    - name: Store snapshot metadata and batch size
-      ansible.builtin.set_fact:
         snap_name: "{{ snapshot_name }}"
         snap_desc: "{{ snapshot_description }}"
         snap_batch: "{{ batch_size }}"
+        cacheable: false
 
 # ---------------------------------------------------------------------------
 # vCenter 1
@@ -79,66 +137,68 @@
   gather_facts: false
 
   tasks:
-    - name: Retrieve all VMs from vCenter 1
-      community.vmware.vmware_vm_info:
-        hostname: "{{ vc1.host }}"
-        username: "{{ vc1.user }}"
-        password: "{{ vc1.password }}"
-        validate_certs: false
-      register: vc1_vm_info
+    - name: Skip vCenter 1 if no VMs assigned
+      ansible.builtin.debug:
+        msg: "No VMs assigned to vcenter1 in CSV — skipping."
+      when: vc1_vms | length == 0
 
-    - name: "Fire async snapshot tasks for vCenter 1 ({{ vc1_vm_info.virtual_machines | length }} VMs)"
+    - name: "Fire async snapshot tasks for vCenter 1 ({{ vc1_vms | length }} VMs)"
       community.vmware.vmware_guest_snapshot:
         hostname: "{{ vc1.host }}"
         username: "{{ vc1.user }}"
         password: "{{ vc1.password }}"
         validate_certs: false
         datacenter: "{{ item.datacenter }}"
-        name: "{{ item.guest_name }}"
+        name: "{{ item.vm_name }}"
         state: present
         snapshot_name: "{{ snap_name }}"
         description: "{{ snap_desc }}"
         memory_dump: false
         quiesce: false
-      loop: "{{ vc1_vm_info.virtual_machines }}"
+      loop: "{{ vc1_vms }}"
       loop_control:
-        label: "{{ item.guest_name }}"
+        label: "{{ item.vm_name }}"
         pause: "{{ 1 if (ansible_loop.index % snap_batch | int == 0) else 0 }}"
         extended: true
-      async: 600      # allow up to 10 min per VM snapshot
-      poll: 0         # fire-and-forget; we check status below
+      async: 600
+      poll: 0
       ignore_errors: true
       register: vc1_async_jobs
+      when: vc1_vms | length > 0
 
     - name: Wait for all vCenter 1 snapshot jobs to complete
       ansible.builtin.async_status:
         jid: "{{ item.ansible_job_id }}"
-      loop: "{{ vc1_async_jobs.results }}"
+      loop: "{{ vc1_async_jobs.results | default([]) }}"
       loop_control:
-        label: "{{ item.item.guest_name }}"
+        label: "{{ item.item.vm_name }}"
       register: vc1_job_results
       until: vc1_job_results.finished
       retries: 60
       delay: 10
       ignore_errors: true
+      when: vc1_vms | length > 0
 
     - name: Build vCenter 1 summary
       ansible.builtin.set_fact:
         vc1_succeeded: >-
           {{ vc1_job_results.results
+             | default([])
              | selectattr('failed', 'equalto', false)
-             | map(attribute='item.item.guest_name')
+             | map(attribute='item.item.vm_name')
              | list }}
         vc1_failed: >-
           {{ vc1_job_results.results
+             | default([])
              | selectattr('failed', 'equalto', true)
-             | map(attribute='item.item.guest_name')
+             | map(attribute='item.item.vm_name')
              | list }}
 
     - name: vCenter 1 — snapshot summary
       ansible.builtin.debug:
         msg:
           - "=== vCenter 1 ({{ vc1.host }}) — snapshot: '{{ snap_name }}' ==="
+          - "  Total VMs : {{ vc1_vms | length }}"
           - "  Succeeded : {{ vc1_succeeded | length }}"
           - "  Failed    : {{ vc1_failed | length }}"
           - "  Failed VMs: {{ vc1_failed if vc1_failed else 'none' }}"
@@ -151,66 +211,68 @@
   gather_facts: false
 
   tasks:
-    - name: Retrieve all VMs from vCenter 2
-      community.vmware.vmware_vm_info:
-        hostname: "{{ vc2.host }}"
-        username: "{{ vc2.user }}"
-        password: "{{ vc2.password }}"
-        validate_certs: false
-      register: vc2_vm_info
+    - name: Skip vCenter 2 if no VMs assigned
+      ansible.builtin.debug:
+        msg: "No VMs assigned to vcenter2 in CSV — skipping."
+      when: vc2_vms | length == 0
 
-    - name: "Fire async snapshot tasks for vCenter 2 ({{ vc2_vm_info.virtual_machines | length }} VMs)"
+    - name: "Fire async snapshot tasks for vCenter 2 ({{ vc2_vms | length }} VMs)"
       community.vmware.vmware_guest_snapshot:
         hostname: "{{ vc2.host }}"
         username: "{{ vc2.user }}"
         password: "{{ vc2.password }}"
         validate_certs: false
         datacenter: "{{ item.datacenter }}"
-        name: "{{ item.guest_name }}"
+        name: "{{ item.vm_name }}"
         state: present
         snapshot_name: "{{ snap_name }}"
         description: "{{ snap_desc }}"
         memory_dump: false
         quiesce: false
-      loop: "{{ vc2_vm_info.virtual_machines }}"
+      loop: "{{ vc2_vms }}"
       loop_control:
-        label: "{{ item.guest_name }}"
+        label: "{{ item.vm_name }}"
         pause: "{{ 1 if (ansible_loop.index % snap_batch | int == 0) else 0 }}"
         extended: true
       async: 600
       poll: 0
       ignore_errors: true
       register: vc2_async_jobs
+      when: vc2_vms | length > 0
 
     - name: Wait for all vCenter 2 snapshot jobs to complete
       ansible.builtin.async_status:
         jid: "{{ item.ansible_job_id }}"
-      loop: "{{ vc2_async_jobs.results }}"
+      loop: "{{ vc2_async_jobs.results | default([]) }}"
       loop_control:
-        label: "{{ item.item.guest_name }}"
+        label: "{{ item.item.vm_name }}"
       register: vc2_job_results
       until: vc2_job_results.finished
       retries: 60
       delay: 10
       ignore_errors: true
+      when: vc2_vms | length > 0
 
     - name: Build vCenter 2 summary
       ansible.builtin.set_fact:
         vc2_succeeded: >-
           {{ vc2_job_results.results
+             | default([])
              | selectattr('failed', 'equalto', false)
-             | map(attribute='item.item.guest_name')
+             | map(attribute='item.item.vm_name')
              | list }}
         vc2_failed: >-
           {{ vc2_job_results.results
+             | default([])
              | selectattr('failed', 'equalto', true)
-             | map(attribute='item.item.guest_name')
+             | map(attribute='item.item.vm_name')
              | list }}
 
     - name: vCenter 2 — snapshot summary
       ansible.builtin.debug:
         msg:
           - "=== vCenter 2 ({{ vc2.host }}) — snapshot: '{{ snap_name }}' ==="
+          - "  Total VMs : {{ vc2_vms | length }}"
           - "  Succeeded : {{ vc2_succeeded | length }}"
           - "  Failed    : {{ vc2_failed | length }}"
           - "  Failed VMs: {{ vc2_failed if vc2_failed else 'none' }}"
@@ -230,19 +292,22 @@
           - " SNAPSHOT RUN COMPLETE"
           - "========================================="
           - " Snapshot name : {{ snap_name }}"
+          - " CSV inventory : {{ vm_csv.list | length }} VMs total"
           - "-----------------------------------------"
           - " vCenter 1 ({{ vc1.host }})"
-          - "   Succeeded : {{ vc1_succeeded | length }}"
-          - "   Failed    : {{ vc1_failed | length }}"
+          - "   Total VMs  : {{ vc1_vms | length }}"
+          - "   Succeeded  : {{ vc1_succeeded | length }}"
+          - "   Failed     : {{ vc1_failed | length }}"
           - " vCenter 2 ({{ vc2.host }})"
-          - "   Succeeded : {{ vc2_succeeded | length }}"
-          - "   Failed    : {{ vc2_failed | length }}"
+          - "   Total VMs  : {{ vc2_vms | length }}"
+          - "   Succeeded  : {{ vc2_succeeded | length }}"
+          - "   Failed     : {{ vc2_failed | length }}"
           - "-----------------------------------------"
           - " Total succeeded : {{ (vc1_succeeded + vc2_succeeded) | length }}"
           - " Total failed    : {{ (vc1_failed + vc2_failed) | length }}"
           - "========================================="
 
-    - name: List all failed VMs (if any)
+    - name: List all failed VMs
       ansible.builtin.debug:
         msg: "FAILED: {{ item }}"
       loop: "{{ vc1_failed + vc2_failed }}"
@@ -250,5 +315,5 @@
 
     - name: Fail playbook if any snapshot failed
       ansible.builtin.fail:
-        msg: "{{ (vc1_failed + vc2_failed) | length }} VM(s) failed to snapshot. See list above."
+        msg: "{{ (vc1_failed + vc2_failed) | length }} VM(s) failed. See list above."
       when: (vc1_failed + vc2_failed) | length > 0

@@ -1,8 +1,20 @@
 # Multi-vCenter VM Snapshot Playbook
 
-Creates snapshots for all VMs across two vCenter servers. Supports 100+ VMs
-by running snapshot tasks asynchronously in configurable batches. Credentials
-are entered interactively — nothing is stored in files.
+Creates snapshots for VMs listed in a CSV inventory file across two vCenter
+servers. Supports 100+ VMs by running snapshot tasks asynchronously in
+configurable batches. Credentials are entered interactively — nothing is
+stored in files.
+
+## File Structure
+
+```
+snapshot_creation/
+├── create_snapshots.yml   # main playbook
+├── vm_inventory.csv       # VM inventory (edit this with your real VMs)
+├── inventory.ini          # localhost inventory
+├── requirements.yml       # Ansible collection dependencies
+└── README.md
+```
 
 ## Prerequisites
 
@@ -10,6 +22,29 @@ are entered interactively — nothing is stored in files.
 pip install ansible pyVmomi
 ansible-galaxy collection install -r requirements.yml
 ```
+
+## CSV Inventory Format
+
+Edit `vm_inventory.csv` with your real VM names. Three columns are required:
+
+| Column | Description |
+|---|---|
+| `vm_name` | VM display name exactly as it appears in vCenter |
+| `datacenter` | Datacenter name the VM belongs to |
+| `vcenter` | Must be exactly `vcenter1` or `vcenter2` |
+
+**Example:**
+
+```csv
+vm_name,datacenter,vcenter
+web-server-01,DatacenterA,vcenter1
+db-server-01,DatacenterA,vcenter1
+app-server-01,DatacenterB,vcenter2
+db-server-11,DatacenterB,vcenter2
+```
+
+The sample `vm_inventory.csv` ships with 100 VMs — 50 per vCenter.
+Replace the names and datacenter values with your real environment.
 
 ## Usage
 
@@ -29,44 +64,77 @@ You will be prompted for:
 | vCenter 2 password | Hidden input |
 | Snapshot name | Default: `pre-change-snapshot` |
 | Snapshot description | Default: `Automated snapshot before change` |
+| Path to VM inventory CSV | Default: `vm_inventory.csv` |
 
 ## What it does
 
-1. Connects to both vCenters and retrieves all VMs.
-2. Fires snapshot tasks asynchronously in batches of 10 per vCenter (configurable).
-3. Waits for all jobs to finish, tolerating individual VM failures.
-4. Prints a summary showing succeeded/failed counts per vCenter.
-5. Lists any failed VMs by name and exits non-zero if any failed.
+1. Validates the CSV file exists and has the required columns.
+2. Splits VMs from the CSV into two groups — `vcenter1` and `vcenter2`.
+3. Shows an inventory summary before starting (VM counts per vCenter).
+4. Fires snapshot tasks asynchronously in batches of 10 per vCenter.
+5. Waits for all jobs to finish — one failed VM never stops the rest.
+6. Prints per-vCenter and combined totals with succeeded/failed counts.
+7. Lists any failed VMs by name and exits non-zero if any failed.
 
-## Tuning batch size
+## Playbook flow
 
-The `batch_size` variable in `create_snapshots.yml` controls how many
-concurrent snapshot operations are submitted per vCenter before a 1-second
-pause. The default is **10**, which is safe for most vCenter deployments.
-Raise it carefully — too many concurrent snapshots can overload storage I/O.
+```
+PLAY 1 — Load CSV + gather credentials
+  ├─ Validate CSV exists and has correct columns
+  ├─ Split 100 VMs → vc1_vms (50) and vc2_vms (50)
+  └─ Show inventory summary
 
-```yaml
-vars:
-  batch_size: 10   # increase to 20 if your storage can handle it
+PLAY 2 — vCenter 1 (50 VMs)
+  ├─ Fire all 50 snapshot jobs asynchronously (batch of 10)
+  ├─ Poll async_status until all 50 finish
+  └─ Summary: succeeded / failed
+
+PLAY 3 — vCenter 2 (50 VMs)
+  ├─ Same as vCenter 1
+  └─ Summary: succeeded / failed
+
+PLAY 4 — Final report
+  ├─ Combined totals across both vCenters
+  ├─ List failed VMs by name
+  └─ Exit non-zero if any failed
 ```
 
-## Options
+## Tuning
 
-Edit the `vmware_guest_snapshot` task parameters to change snapshot behaviour:
+**Batch size** (`batch_size` in `create_snapshots.yml`, default `10`):
+Controls concurrent snapshot submissions per vCenter before a 1-second pause.
+Raise to `20` only if your storage I/O can handle it.
 
-- `quiesce: true` — freeze guest filesystem for a consistent snapshot (requires VMware Tools)
-- `memory_dump: true` — capture RAM state in the snapshot (larger, slower)
-- `async: 600` — per-VM timeout in seconds (default 10 min; increase for large VMs)
+**Per-VM timeout** (`async: 600`): 10 minutes per VM. Increase for very large VMs.
+
+**Snapshot options:**
+- `quiesce: true` — freeze guest filesystem (requires VMware Tools)
+- `memory_dump: true` — include RAM state (slower, larger snapshot)
+
+## Use a different CSV at runtime
+
+```bash
+ansible-playbook -i inventory.ini create_snapshots.yml \
+  -e "csv_file=/path/to/my_custom_inventory.csv"
+```
+
+This skips the interactive CSV prompt and uses the file you specify directly.
 
 ## Example output
 
 ```
+CSV loaded: 100 total VMs
+  vCenter 1 (vc1.example.com): 50 VMs
+  vCenter 2 (vc2.example.com): 50 VMs
+
 === vCenter 1 (vc1.example.com) — snapshot: 'pre-change-snapshot' ===
+  Total VMs : 50
   Succeeded : 50
   Failed    : 0
   Failed VMs: none
 
 === vCenter 2 (vc2.example.com) — snapshot: 'pre-change-snapshot' ===
+  Total VMs : 50
   Succeeded : 50
   Failed    : 0
   Failed VMs: none
@@ -75,13 +143,16 @@ Edit the `vmware_guest_snapshot` task parameters to change snapshot behaviour:
  SNAPSHOT RUN COMPLETE
 =========================================
  Snapshot name : pre-change-snapshot
+ CSV inventory : 100 VMs total
 -----------------------------------------
  vCenter 1 (vc1.example.com)
-   Succeeded : 50
-   Failed    : 0
+   Total VMs  : 50
+   Succeeded  : 50
+   Failed     : 0
  vCenter 2 (vc2.example.com)
-   Succeeded : 50
-   Failed    : 0
+   Total VMs  : 50
+   Succeeded  : 50
+   Failed     : 0
 -----------------------------------------
  Total succeeded : 100
  Total failed    : 0
