@@ -1,7 +1,8 @@
 ---
 # Playbook: create_snapshots.yml
 # Creates VM snapshots across two vCenter servers.
-# Prompts for vCenter hostnames, credentials, and snapshot details at runtime.
+# Snapshots are fired asynchronously (batch_size at a time) so 100 VMs
+# across two vCenters complete in minutes rather than hours.
 
 - name: Gather snapshot parameters
   hosts: localhost
@@ -42,32 +43,43 @@
       private: false
       default: "Automated snapshot before change"
 
+  vars:
+    # Max concurrent snapshot tasks per vCenter.
+    # vCenter typically handles 10-20 concurrent snapshot ops safely.
+    batch_size: 10
+
   tasks:
-    - name: Store credentials for vCenter 1
+    - name: Store vCenter 1 credentials
       ansible.builtin.set_fact:
         vc1:
           host: "{{ vcenter1_host }}"
           user: "{{ vcenter1_user }}"
           password: "{{ vcenter1_password }}"
+        cacheable: false
 
-    - name: Store credentials for vCenter 2
+    - name: Store vCenter 2 credentials
       ansible.builtin.set_fact:
         vc2:
           host: "{{ vcenter2_host }}"
           user: "{{ vcenter2_user }}"
           password: "{{ vcenter2_password }}"
+        cacheable: false
 
-    - name: Store snapshot metadata
+    - name: Store snapshot metadata and batch size
       ansible.builtin.set_fact:
         snap_name: "{{ snapshot_name }}"
         snap_desc: "{{ snapshot_description }}"
+        snap_batch: "{{ batch_size }}"
 
+# ---------------------------------------------------------------------------
+# vCenter 1
+# ---------------------------------------------------------------------------
 - name: Create snapshots on vCenter 1
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: Get list of all VMs from vCenter 1
+    - name: Retrieve all VMs from vCenter 1
       community.vmware.vmware_vm_info:
         hostname: "{{ vc1.host }}"
         username: "{{ vc1.user }}"
@@ -75,7 +87,7 @@
         validate_certs: false
       register: vc1_vm_info
 
-    - name: Create snapshot for each VM on vCenter 1
+    - name: "Fire async snapshot tasks for vCenter 1 ({{ vc1_vm_info.virtual_machines | length }} VMs)"
       community.vmware.vmware_guest_snapshot:
         hostname: "{{ vc1.host }}"
         username: "{{ vc1.user }}"
@@ -91,22 +103,55 @@
       loop: "{{ vc1_vm_info.virtual_machines }}"
       loop_control:
         label: "{{ item.guest_name }}"
-      register: vc1_snapshot_results
+        pause: "{{ 1 if (ansible_loop.index % snap_batch | int == 0) else 0 }}"
+        extended: true
+      async: 600      # allow up to 10 min per VM snapshot
+      poll: 0         # fire-and-forget; we check status below
+      ignore_errors: true
+      register: vc1_async_jobs
 
-    - name: Report vCenter 1 snapshot results
-      ansible.builtin.debug:
-        msg: "Snapshot '{{ snap_name }}' created for {{ item.item.guest_name }} on {{ vc1.host }}"
-      loop: "{{ vc1_snapshot_results.results }}"
+    - name: Wait for all vCenter 1 snapshot jobs to complete
+      ansible.builtin.async_status:
+        jid: "{{ item.ansible_job_id }}"
+      loop: "{{ vc1_async_jobs.results }}"
       loop_control:
         label: "{{ item.item.guest_name }}"
-      when: item.changed
+      register: vc1_job_results
+      until: vc1_job_results.finished
+      retries: 60
+      delay: 10
+      ignore_errors: true
 
+    - name: Build vCenter 1 summary
+      ansible.builtin.set_fact:
+        vc1_succeeded: >-
+          {{ vc1_job_results.results
+             | selectattr('failed', 'equalto', false)
+             | map(attribute='item.item.guest_name')
+             | list }}
+        vc1_failed: >-
+          {{ vc1_job_results.results
+             | selectattr('failed', 'equalto', true)
+             | map(attribute='item.item.guest_name')
+             | list }}
+
+    - name: vCenter 1 — snapshot summary
+      ansible.builtin.debug:
+        msg:
+          - "=== vCenter 1 ({{ vc1.host }}) — snapshot: '{{ snap_name }}' ==="
+          - "  Succeeded : {{ vc1_succeeded | length }}"
+          - "  Failed    : {{ vc1_failed | length }}"
+          - "  Failed VMs: {{ vc1_failed if vc1_failed else 'none' }}"
+
+# ---------------------------------------------------------------------------
+# vCenter 2
+# ---------------------------------------------------------------------------
 - name: Create snapshots on vCenter 2
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: Get list of all VMs from vCenter 2
+    - name: Retrieve all VMs from vCenter 2
       community.vmware.vmware_vm_info:
         hostname: "{{ vc2.host }}"
         username: "{{ vc2.user }}"
@@ -114,7 +159,7 @@
         validate_certs: false
       register: vc2_vm_info
 
-    - name: Create snapshot for each VM on vCenter 2
+    - name: "Fire async snapshot tasks for vCenter 2 ({{ vc2_vm_info.virtual_machines | length }} VMs)"
       community.vmware.vmware_guest_snapshot:
         hostname: "{{ vc2.host }}"
         username: "{{ vc2.user }}"
@@ -130,12 +175,80 @@
       loop: "{{ vc2_vm_info.virtual_machines }}"
       loop_control:
         label: "{{ item.guest_name }}"
-      register: vc2_snapshot_results
+        pause: "{{ 1 if (ansible_loop.index % snap_batch | int == 0) else 0 }}"
+        extended: true
+      async: 600
+      poll: 0
+      ignore_errors: true
+      register: vc2_async_jobs
 
-    - name: Report vCenter 2 snapshot results
-      ansible.builtin.debug:
-        msg: "Snapshot '{{ snap_name }}' created for {{ item.item.guest_name }} on {{ vc2.host }}"
-      loop: "{{ vc2_snapshot_results.results }}"
+    - name: Wait for all vCenter 2 snapshot jobs to complete
+      ansible.builtin.async_status:
+        jid: "{{ item.ansible_job_id }}"
+      loop: "{{ vc2_async_jobs.results }}"
       loop_control:
         label: "{{ item.item.guest_name }}"
-      when: item.changed
+      register: vc2_job_results
+      until: vc2_job_results.finished
+      retries: 60
+      delay: 10
+      ignore_errors: true
+
+    - name: Build vCenter 2 summary
+      ansible.builtin.set_fact:
+        vc2_succeeded: >-
+          {{ vc2_job_results.results
+             | selectattr('failed', 'equalto', false)
+             | map(attribute='item.item.guest_name')
+             | list }}
+        vc2_failed: >-
+          {{ vc2_job_results.results
+             | selectattr('failed', 'equalto', true)
+             | map(attribute='item.item.guest_name')
+             | list }}
+
+    - name: vCenter 2 — snapshot summary
+      ansible.builtin.debug:
+        msg:
+          - "=== vCenter 2 ({{ vc2.host }}) — snapshot: '{{ snap_name }}' ==="
+          - "  Succeeded : {{ vc2_succeeded | length }}"
+          - "  Failed    : {{ vc2_failed | length }}"
+          - "  Failed VMs: {{ vc2_failed if vc2_failed else 'none' }}"
+
+# ---------------------------------------------------------------------------
+# Combined final report
+# ---------------------------------------------------------------------------
+- name: Final combined report
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Overall snapshot report
+      ansible.builtin.debug:
+        msg:
+          - "========================================="
+          - " SNAPSHOT RUN COMPLETE"
+          - "========================================="
+          - " Snapshot name : {{ snap_name }}"
+          - "-----------------------------------------"
+          - " vCenter 1 ({{ vc1.host }})"
+          - "   Succeeded : {{ vc1_succeeded | length }}"
+          - "   Failed    : {{ vc1_failed | length }}"
+          - " vCenter 2 ({{ vc2.host }})"
+          - "   Succeeded : {{ vc2_succeeded | length }}"
+          - "   Failed    : {{ vc2_failed | length }}"
+          - "-----------------------------------------"
+          - " Total succeeded : {{ (vc1_succeeded + vc2_succeeded) | length }}"
+          - " Total failed    : {{ (vc1_failed + vc2_failed) | length }}"
+          - "========================================="
+
+    - name: List all failed VMs (if any)
+      ansible.builtin.debug:
+        msg: "FAILED: {{ item }}"
+      loop: "{{ vc1_failed + vc2_failed }}"
+      when: (vc1_failed + vc2_failed) | length > 0
+
+    - name: Fail playbook if any snapshot failed
+      ansible.builtin.fail:
+        msg: "{{ (vc1_failed + vc2_failed) | length }} VM(s) failed to snapshot. See list above."
+      when: (vc1_failed + vc2_failed) | length > 0
