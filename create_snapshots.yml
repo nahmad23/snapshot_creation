@@ -1,0 +1,141 @@
+---
+# Playbook: create_snapshots.yml
+# Creates VM snapshots across two vCenter servers.
+# Prompts for vCenter hostnames, credentials, and snapshot details at runtime.
+
+- name: Gather snapshot parameters
+  hosts: localhost
+  gather_facts: false
+
+  vars_prompt:
+    - name: vcenter1_host
+      prompt: "vCenter 1 hostname or IP"
+      private: false
+
+    - name: vcenter1_user
+      prompt: "vCenter 1 username (e.g. administrator@vsphere.local)"
+      private: false
+
+    - name: vcenter1_password
+      prompt: "vCenter 1 password"
+      private: true
+
+    - name: vcenter2_host
+      prompt: "vCenter 2 hostname or IP"
+      private: false
+
+    - name: vcenter2_user
+      prompt: "vCenter 2 username (e.g. administrator@vsphere.local)"
+      private: false
+
+    - name: vcenter2_password
+      prompt: "vCenter 2 password"
+      private: true
+
+    - name: snapshot_name
+      prompt: "Snapshot name"
+      private: false
+      default: "pre-change-snapshot"
+
+    - name: snapshot_description
+      prompt: "Snapshot description"
+      private: false
+      default: "Automated snapshot before change"
+
+  tasks:
+    - name: Store credentials for vCenter 1
+      ansible.builtin.set_fact:
+        vc1:
+          host: "{{ vcenter1_host }}"
+          user: "{{ vcenter1_user }}"
+          password: "{{ vcenter1_password }}"
+
+    - name: Store credentials for vCenter 2
+      ansible.builtin.set_fact:
+        vc2:
+          host: "{{ vcenter2_host }}"
+          user: "{{ vcenter2_user }}"
+          password: "{{ vcenter2_password }}"
+
+    - name: Store snapshot metadata
+      ansible.builtin.set_fact:
+        snap_name: "{{ snapshot_name }}"
+        snap_desc: "{{ snapshot_description }}"
+
+- name: Create snapshots on vCenter 1
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Get list of all VMs from vCenter 1
+      community.vmware.vmware_vm_info:
+        hostname: "{{ vc1.host }}"
+        username: "{{ vc1.user }}"
+        password: "{{ vc1.password }}"
+        validate_certs: false
+      register: vc1_vm_info
+
+    - name: Create snapshot for each VM on vCenter 1
+      community.vmware.vmware_guest_snapshot:
+        hostname: "{{ vc1.host }}"
+        username: "{{ vc1.user }}"
+        password: "{{ vc1.password }}"
+        validate_certs: false
+        datacenter: "{{ item.datacenter }}"
+        name: "{{ item.guest_name }}"
+        state: present
+        snapshot_name: "{{ snap_name }}"
+        description: "{{ snap_desc }}"
+        memory_dump: false
+        quiesce: false
+      loop: "{{ vc1_vm_info.virtual_machines }}"
+      loop_control:
+        label: "{{ item.guest_name }}"
+      register: vc1_snapshot_results
+
+    - name: Report vCenter 1 snapshot results
+      ansible.builtin.debug:
+        msg: "Snapshot '{{ snap_name }}' created for {{ item.item.guest_name }} on {{ vc1.host }}"
+      loop: "{{ vc1_snapshot_results.results }}"
+      loop_control:
+        label: "{{ item.item.guest_name }}"
+      when: item.changed
+
+- name: Create snapshots on vCenter 2
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Get list of all VMs from vCenter 2
+      community.vmware.vmware_vm_info:
+        hostname: "{{ vc2.host }}"
+        username: "{{ vc2.user }}"
+        password: "{{ vc2.password }}"
+        validate_certs: false
+      register: vc2_vm_info
+
+    - name: Create snapshot for each VM on vCenter 2
+      community.vmware.vmware_guest_snapshot:
+        hostname: "{{ vc2.host }}"
+        username: "{{ vc2.user }}"
+        password: "{{ vc2.password }}"
+        validate_certs: false
+        datacenter: "{{ item.datacenter }}"
+        name: "{{ item.guest_name }}"
+        state: present
+        snapshot_name: "{{ snap_name }}"
+        description: "{{ snap_desc }}"
+        memory_dump: false
+        quiesce: false
+      loop: "{{ vc2_vm_info.virtual_machines }}"
+      loop_control:
+        label: "{{ item.guest_name }}"
+      register: vc2_snapshot_results
+
+    - name: Report vCenter 2 snapshot results
+      ansible.builtin.debug:
+        msg: "Snapshot '{{ snap_name }}' created for {{ item.item.guest_name }} on {{ vc2.host }}"
+      loop: "{{ vc2_snapshot_results.results }}"
+      loop_control:
+        label: "{{ item.item.guest_name }}"
+      when: item.changed
