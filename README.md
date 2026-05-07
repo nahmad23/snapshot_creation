@@ -31,20 +31,21 @@ Edit `vm_inventory.csv` with your real VM names. Three columns are required:
 |---|---|
 | `vm_name` | VM display name exactly as it appears in vCenter |
 | `datacenter` | Datacenter name the VM belongs to |
-| `vcenter` | Must be exactly `vcenter1` or `vcenter2` |
+| `vcenter` | Hostname or IP of the vCenter that manages this VM — must match exactly what you type at the prompt |
 
 **Example:**
 
 ```csv
 vm_name,datacenter,vcenter
-web-server-01,DatacenterA,vcenter1
-db-server-01,DatacenterA,vcenter1
-app-server-01,DatacenterB,vcenter2
-db-server-11,DatacenterB,vcenter2
+web-server-01,DatacenterA,us1sitvmw01v.company.com
+db-server-01,DatacenterA,us1sitvmw01v.company.com
+app-server-01,DatacenterB,us2sitvmw01v.company.com
+db-server-11,DatacenterB,us2sitvmw01v.company.com
 ```
 
-The sample `vm_inventory.csv` ships with 100 VMs — 50 per vCenter.
-Replace the names and datacenter values with your real environment.
+The sample `vm_inventory.csv` ships with 100 VMs — 50 per vCenter using
+placeholder hostnames `vc1.example.com` and `vc2.example.com`.
+Replace all three columns with your real VM names, datacenters, and vCenter hostnames.
 
 ## Usage
 

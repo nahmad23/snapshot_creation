@@ -7,7 +7,8 @@
 # CSV columns required:
 #   vm_name    - VM display name in vCenter
 #   datacenter - Datacenter the VM belongs to
-#   vcenter    - Must be exactly "vcenter1" or "vcenter2"
+#   vcenter    - Hostname or IP of the vCenter that manages this VM
+#                (must match exactly what you enter at the prompt)
 
 - name: Gather snapshot parameters and load CSV inventory
   hosts: localhost
@@ -87,8 +88,8 @@
 
     - name: Split VMs by vCenter
       ansible.builtin.set_fact:
-        vc1_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', 'vcenter1') | list }}"
-        vc2_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', 'vcenter2') | list }}"
+        vc1_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', vcenter1_host) | list }}"
+        vc2_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', vcenter2_host) | list }}"
 
     - name: Show inventory summary
       ansible.builtin.debug:
@@ -101,17 +102,18 @@
       ansible.builtin.debug:
         msg: >
           WARNING: {{ skipped | length }} row(s) skipped — vcenter column value
-          is not 'vcenter1' or 'vcenter2': {{ skipped | map(attribute='vm_name') | list }}
+          does not match either vCenter host entered. VMs: {{ skipped | map(attribute='vm_name') | list }}.
+          Values seen: {{ skipped | map(attribute='vcenter') | unique | list }}
       vars:
         skipped: >-
           {{ vm_csv.list
-             | rejectattr('vcenter', 'equalto', 'vcenter1')
-             | rejectattr('vcenter', 'equalto', 'vcenter2')
+             | rejectattr('vcenter', 'equalto', vcenter1_host)
+             | rejectattr('vcenter', 'equalto', vcenter2_host)
              | list }}
       when: >
         vm_csv.list
-        | rejectattr('vcenter', 'equalto', 'vcenter1')
-        | rejectattr('vcenter', 'equalto', 'vcenter2')
+        | rejectattr('vcenter', 'equalto', vcenter1_host)
+        | rejectattr('vcenter', 'equalto', vcenter2_host)
         | list | length > 0
 
     - name: Store credentials and snapshot metadata
