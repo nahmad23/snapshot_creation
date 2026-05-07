@@ -55,9 +55,7 @@
       default: "vm_inventory.csv"
 
   vars:
-    # Max concurrent snapshot tasks submitted per vCenter before a 1s pause.
-    # vCenter safely handles 10-20 concurrent snapshot operations.
-    batch_size: 10
+    batch_size: 10  # kept for reference; tune ansible forks via ansible.cfg if needed
 
   tasks:
     - name: Validate CSV file exists
@@ -160,8 +158,6 @@
       loop: "{{ vc1_vms }}"
       loop_control:
         label: "{{ item.vm_name }}"
-        pause: "{{ 1 if (ansible_loop.index % snap_batch | int == 0) else 0 }}"
-        extended: true
       async: 600
       poll: 0
       ignore_errors: true
@@ -234,8 +230,6 @@
       loop: "{{ vc2_vms }}"
       loop_control:
         label: "{{ item.vm_name }}"
-        pause: "{{ 1 if (ansible_loop.index % snap_batch | int == 0) else 0 }}"
-        extended: true
       async: 600
       poll: 0
       ignore_errors: true
