@@ -1,8 +1,8 @@
 ---
 # Playbook: create_snapshots.yml
 # Reads VM inventory from vm_inventory.csv and creates snapshots on two
-# vCenter servers. Snapshots run asynchronously in batches so 100 VMs
-# finish in minutes rather than hours.
+# vCenter servers. Snapshots run asynchronously so 100 VMs finish in
+# minutes rather than hours.
 #
 # CSV columns required:
 #   vm_name    - VM display name in vCenter
@@ -54,9 +54,6 @@
       private: false
       default: "vm_inventory.csv"
 
-  vars:
-    batch_size: 10  # kept for reference; tune ansible forks via ansible.cfg if needed
-
   tasks:
     - name: Validate CSV file exists
       ansible.builtin.stat:
@@ -76,13 +73,12 @@
     - name: Validate CSV has required columns
       ansible.builtin.fail:
         msg: >
-          CSV is missing required columns. Required: vm_name, datacenter, folder, vcenter.
+          CSV is missing required columns. Required: vm_name, datacenter, vcenter.
           Found: {{ vm_csv.list[0].keys() | list }}
       when: >
         vm_csv.list | length == 0 or
         'vm_name' not in vm_csv.list[0] or
         'datacenter' not in vm_csv.list[0] or
-        'folder' not in vm_csv.list[0] or
         'vcenter' not in vm_csv.list[0]
 
     - name: Split VMs by vCenter
@@ -101,7 +97,8 @@
       ansible.builtin.debug:
         msg: >
           WARNING: {{ skipped | length }} row(s) skipped — vcenter column value
-          does not match either vCenter host entered. VMs: {{ skipped | map(attribute='vm_name') | list }}.
+          does not match either vCenter host entered.
+          VMs: {{ skipped | map(attribute='vm_name') | list }}.
           Values seen: {{ skipped | map(attribute='vcenter') | unique | list }}
       vars:
         skipped: >-
@@ -127,7 +124,6 @@
           password: "{{ vcenter2_password }}"
         snap_name: "{{ snapshot_name }}"
         snap_desc: "{{ snapshot_description }}"
-        snap_batch: "{{ batch_size }}"
         cacheable: false
 
 # ---------------------------------------------------------------------------
@@ -150,7 +146,7 @@
         password: "{{ vc1.password }}"
         validate_certs: false
         datacenter: "{{ item.datacenter }}"
-        folder: "{{ item.folder }}"
+        folder: "/{{ item.datacenter }}/vm"
         name: "{{ item.vm_name }}"
         state: present
         snapshot_name: "{{ snap_name }}"
@@ -223,7 +219,7 @@
         password: "{{ vc2.password }}"
         validate_certs: false
         datacenter: "{{ item.datacenter }}"
-        folder: "{{ item.folder }}"
+        folder: "/{{ item.datacenter }}/vm"
         name: "{{ item.vm_name }}"
         state: present
         snapshot_name: "{{ snap_name }}"
