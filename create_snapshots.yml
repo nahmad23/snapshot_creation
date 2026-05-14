@@ -1,44 +1,19 @@
 ---
 # Playbook: create_snapshots.yml
-# Reads VM inventory from vm_inventory.csv and creates snapshots on two
-# vCenter servers. Snapshots run asynchronously so 100 VMs finish in
-# minutes rather than hours.
+# Reads VM inventory from vm_inventory.csv. vCenter hostnames are taken
+# directly from the CSV — no URL prompts. Only credentials and snapshot
+# details are asked at runtime.
 #
 # CSV columns required:
 #   vm_name    - VM display name in vCenter
 #   datacenter - Datacenter the VM belongs to
 #   vcenter    - Hostname or IP of the vCenter that manages this VM
-#                (must match exactly what you enter at the prompt)
 
-- name: Gather snapshot parameters and load CSV inventory
+- name: Load CSV inventory and gather credentials
   hosts: localhost
   gather_facts: false
 
   vars_prompt:
-    - name: vcenter1_host
-      prompt: "vCenter 1 hostname or IP"
-      private: false
-
-    - name: vcenter1_user
-      prompt: "vCenter 1 username (e.g. administrator@vsphere.local)"
-      private: false
-
-    - name: vcenter1_password
-      prompt: "vCenter 1 password"
-      private: true
-
-    - name: vcenter2_host
-      prompt: "vCenter 2 hostname or IP"
-      private: false
-
-    - name: vcenter2_user
-      prompt: "vCenter 2 username (e.g. administrator@vsphere.local)"
-      private: false
-
-    - name: vcenter2_password
-      prompt: "vCenter 2 password"
-      private: true
-
     - name: snapshot_name
       prompt: "Snapshot name"
       private: false
@@ -81,50 +56,98 @@
         'datacenter' not in vm_csv.list[0] or
         'vcenter' not in vm_csv.list[0]
 
-    - name: Split VMs by vCenter
+    - name: Extract unique vCenter hostnames from CSV
       ansible.builtin.set_fact:
-        vc1_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', vcenter1_host) | list }}"
-        vc2_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', vcenter2_host) | list }}"
+        vcenter_hosts: "{{ vm_csv.list | map(attribute='vcenter') | unique | list | sort }}"
 
-    - name: Show inventory summary
+    - name: Abort if more than 2 vCenters found
+      ansible.builtin.fail:
+        msg: >
+          Found {{ vcenter_hosts | length }} unique vCenter hosts in CSV: {{ vcenter_hosts }}.
+          This playbook supports up to 2 vCenters.
+      when: vcenter_hosts | length > 2
+
+    - name: Show vCenters detected in CSV
       ansible.builtin.debug:
         msg:
-          - "CSV loaded: {{ vm_csv.list | length }} total VMs"
-          - "  vCenter 1 ({{ vcenter1_host }}): {{ vc1_vms | length }} VMs"
-          - "  vCenter 2 ({{ vcenter2_host }}): {{ vc2_vms | length }} VMs"
+          - "Detected {{ vcenter_hosts | length }} vCenter(s) in CSV:"
+          - "  vCenter 1: {{ vcenter_hosts[0] }}"
+          - "  vCenter 2: {{ vcenter_hosts[1] | default('(none)') }}"
 
-    - name: Warn about rows with unrecognised vcenter value
-      ansible.builtin.debug:
-        msg: >
-          WARNING: {{ skipped | length }} row(s) skipped — vcenter column value
-          does not match either vCenter host entered.
-          VMs: {{ skipped | map(attribute='vm_name') | list }}.
-          Values seen: {{ skipped | map(attribute='vcenter') | unique | list }}
-      vars:
-        skipped: >-
-          {{ vm_csv.list
-             | rejectattr('vcenter', 'equalto', vcenter1_host)
-             | rejectattr('vcenter', 'equalto', vcenter2_host)
-             | list }}
-      when: >
-        vm_csv.list
-        | rejectattr('vcenter', 'equalto', vcenter1_host)
-        | rejectattr('vcenter', 'equalto', vcenter2_host)
-        | list | length > 0
+    # --- Credentials for vCenter 1 ---
+    - name: "Prompt — username for {{ vcenter_hosts[0] }}"
+      ansible.builtin.pause:
+        prompt: "Username for {{ vcenter_hosts[0] }} (e.g. administrator@vsphere.local)"
+      register: vc1_user_input
 
-    - name: Store credentials and snapshot metadata
+    - name: "Prompt — password for {{ vcenter_hosts[0] }}"
+      ansible.builtin.pause:
+        prompt: "Password for {{ vcenter_hosts[0] }}"
+        echo: false
+      register: vc1_pass_input
+      no_log: true
+
+    # --- Credentials for vCenter 2 (only if present in CSV) ---
+    - name: "Prompt — username for {{ vcenter_hosts[1] }}"
+      ansible.builtin.pause:
+        prompt: "Username for {{ vcenter_hosts[1] }} (e.g. administrator@vsphere.local)"
+      register: vc2_user_input
+      when: vcenter_hosts | length > 1
+
+    - name: "Prompt — password for {{ vcenter_hosts[1] }}"
+      ansible.builtin.pause:
+        prompt: "Password for {{ vcenter_hosts[1] }}"
+        echo: false
+      register: vc2_pass_input
+      no_log: true
+      when: vcenter_hosts | length > 1
+
+    # --- Store everything for downstream plays ---
+    - name: Store vCenter 1 credentials
       ansible.builtin.set_fact:
         vc1:
-          host: "{{ vcenter1_host }}"
-          user: "{{ vcenter1_user }}"
-          password: "{{ vcenter1_password }}"
+          host: "{{ vcenter_hosts[0] }}"
+          user: "{{ vc1_user_input.user_input }}"
+          password: "{{ vc1_pass_input.user_input }}"
+        cacheable: false
+
+    - name: Store vCenter 2 credentials
+      ansible.builtin.set_fact:
         vc2:
-          host: "{{ vcenter2_host }}"
-          user: "{{ vcenter2_user }}"
-          password: "{{ vcenter2_password }}"
+          host: "{{ vcenter_hosts[1] }}"
+          user: "{{ vc2_user_input.user_input }}"
+          password: "{{ vc2_pass_input.user_input }}"
+        cacheable: false
+      when: vcenter_hosts | length > 1
+
+    - name: Default empty vCenter 2 when not present in CSV
+      ansible.builtin.set_fact:
+        vc2:
+          host: ""
+          user: ""
+          password: ""
+        cacheable: false
+      when: vcenter_hosts | length < 2
+
+    - name: Split VMs by vCenter
+      ansible.builtin.set_fact:
+        vc1_vms: "{{ vm_csv.list | selectattr('vcenter', 'equalto', vcenter_hosts[0]) | list }}"
+        vc2_vms: >-
+          {{ vm_csv.list | selectattr('vcenter', 'equalto', vcenter_hosts[1]) | list
+             if vcenter_hosts | length > 1 else [] }}
+
+    - name: Store snapshot metadata
+      ansible.builtin.set_fact:
         snap_name: "{{ snapshot_name }}"
         snap_desc: "{{ snapshot_description }}"
         cacheable: false
+
+    - name: Inventory summary
+      ansible.builtin.debug:
+        msg:
+          - "CSV loaded : {{ vm_csv.list | length }} total VMs"
+          - "  {{ vc1.host }}: {{ vc1_vms | length }} VMs"
+          - "  {{ vc2.host if vc2.host else '(no second vCenter)' }}: {{ vc2_vms | length }} VMs"
 
 # ---------------------------------------------------------------------------
 # vCenter 1
@@ -136,10 +159,10 @@
   tasks:
     - name: Skip vCenter 1 if no VMs assigned
       ansible.builtin.debug:
-        msg: "No VMs assigned to vcenter1 in CSV — skipping."
+        msg: "No VMs assigned to {{ vc1.host }} in CSV — skipping."
       when: vc1_vms | length == 0
 
-    - name: "Fire async snapshot tasks for vCenter 1 ({{ vc1_vms | length }} VMs)"
+    - name: "Fire async snapshot tasks for {{ vc1.host }} ({{ vc1_vms | length }} VMs)"
       community.vmware.vmware_guest_snapshot:
         hostname: "{{ vc1.host }}"
         username: "{{ vc1.user }}"
@@ -190,10 +213,10 @@
              | map(attribute='item.item.vm_name')
              | list }}
 
-    - name: vCenter 1 — snapshot summary
+    - name: "{{ vc1.host }} — snapshot summary"
       ansible.builtin.debug:
         msg:
-          - "=== vCenter 1 ({{ vc1.host }}) — snapshot: '{{ snap_name }}' ==="
+          - "=== {{ vc1.host }} — snapshot: '{{ snap_name }}' ==="
           - "  Total VMs : {{ vc1_vms | length }}"
           - "  Succeeded : {{ vc1_succeeded | length }}"
           - "  Failed    : {{ vc1_failed | length }}"
@@ -207,12 +230,12 @@
   gather_facts: false
 
   tasks:
-    - name: Skip vCenter 2 if no VMs assigned
+    - name: Skip vCenter 2 if not present in CSV
       ansible.builtin.debug:
-        msg: "No VMs assigned to vcenter2 in CSV — skipping."
-      when: vc2_vms | length == 0
+        msg: "No second vCenter in CSV — skipping."
+      when: vc2.host == '' or vc2_vms | length == 0
 
-    - name: "Fire async snapshot tasks for vCenter 2 ({{ vc2_vms | length }} VMs)"
+    - name: "Fire async snapshot tasks for {{ vc2.host }} ({{ vc2_vms | length }} VMs)"
       community.vmware.vmware_guest_snapshot:
         hostname: "{{ vc2.host }}"
         username: "{{ vc2.user }}"
@@ -233,7 +256,7 @@
       poll: 0
       ignore_errors: true
       register: vc2_async_jobs
-      when: vc2_vms | length > 0
+      when: vc2.host != '' and vc2_vms | length > 0
 
     - name: Wait for all vCenter 2 snapshot jobs to complete
       ansible.builtin.async_status:
@@ -246,7 +269,7 @@
       retries: 60
       delay: 10
       ignore_errors: true
-      when: vc2_vms | length > 0
+      when: vc2.host != '' and vc2_vms | length > 0
 
     - name: Build vCenter 2 summary
       ansible.builtin.set_fact:
@@ -263,14 +286,15 @@
              | map(attribute='item.item.vm_name')
              | list }}
 
-    - name: vCenter 2 — snapshot summary
+    - name: "{{ vc2.host }} — snapshot summary"
       ansible.builtin.debug:
         msg:
-          - "=== vCenter 2 ({{ vc2.host }}) — snapshot: '{{ snap_name }}' ==="
+          - "=== {{ vc2.host }} — snapshot: '{{ snap_name }}' ==="
           - "  Total VMs : {{ vc2_vms | length }}"
           - "  Succeeded : {{ vc2_succeeded | length }}"
           - "  Failed    : {{ vc2_failed | length }}"
           - "  Failed VMs: {{ vc2_failed if vc2_failed else 'none' }}"
+      when: vc2.host != ''
 
 # ---------------------------------------------------------------------------
 # Combined final report
@@ -289,11 +313,11 @@
           - " Snapshot name : {{ snap_name }}"
           - " CSV inventory : {{ vm_csv.list | length }} VMs total"
           - "-----------------------------------------"
-          - " vCenter 1 ({{ vc1.host }})"
+          - " {{ vc1.host }}"
           - "   Total VMs  : {{ vc1_vms | length }}"
           - "   Succeeded  : {{ vc1_succeeded | length }}"
           - "   Failed     : {{ vc1_failed | length }}"
-          - " vCenter 2 ({{ vc2.host }})"
+          - " {{ vc2.host if vc2.host else '(no second vCenter)' }}"
           - "   Total VMs  : {{ vc2_vms | length }}"
           - "   Succeeded  : {{ vc2_succeeded | length }}"
           - "   Failed     : {{ vc2_failed | length }}"
