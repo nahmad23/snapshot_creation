@@ -14,6 +14,14 @@
   gather_facts: false
 
   vars_prompt:
+    - name: vcenter_username
+      prompt: "vCenter username (e.g. administrator@vsphere.local)"
+      private: false
+
+    - name: vcenter_password
+      prompt: "vCenter password (used for all vCenters)"
+      private: true
+
     - name: snapshot_name
       prompt: "Snapshot name"
       private: false
@@ -66,33 +74,19 @@
           - "Detected {{ vcenter_hosts | length }} vCenter(s) in CSV:"
           - "{{ vcenter_hosts }}"
 
-    - name: Prompt for username for each vCenter
-      ansible.builtin.pause:
-        prompt: "Username for {{ item }} (e.g. administrator@vsphere.local)"
-      loop: "{{ vcenter_hosts }}"
-      register: user_prompts
-
-    - name: Prompt for password for each vCenter
-      ansible.builtin.pause:
-        prompt: "Password for {{ item }}"
-        echo: false
-      loop: "{{ vcenter_hosts }}"
-      register: pass_prompts
-      no_log: true
-
-    - name: Build vCenter credentials map
+    - name: Build vCenter credentials map (shared credentials for all vCenters)
       ansible.builtin.set_fact:
         vcenter_creds: >-
           {{ vcenter_creds | default({}) | combine({
-               item.0: {
-                 'host': item.0,
-                 'user': item.1.user_input,
-                 'password': item.2.user_input
+               item: {
+                 'host': item,
+                 'user': vcenter_username,
+                 'password': vcenter_password
                }
              }) }}
-      loop: "{{ vcenter_hosts | zip(user_prompts.results, pass_prompts.results) | list }}"
+      loop: "{{ vcenter_hosts }}"
       loop_control:
-        label: "{{ item.0 }}"
+        label: "{{ item }}"
       no_log: true
 
     - name: Build VMs-by-vCenter map
