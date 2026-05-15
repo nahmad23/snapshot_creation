@@ -3,11 +3,11 @@
 # Called once per vCenter via include_tasks loop in create_snapshots.yml.
 # Expects:
 #   current_vc_host  - vCenter hostname (loop_var)
-#   vcenter_creds    - dict of {hostname: {host, user, password}}
-#   vms_by_vcenter   - dict of {hostname: [vm list]}
+#   vcenter_creds    - dict {hostname: {host, user, password}}
+#   vms_by_vcenter   - dict {hostname: [vm list]}
 #   snap_name        - snapshot name
 #   snap_desc        - snapshot description
-#   snapshot_results - list accumulating per-vCenter summaries
+#   snapshot_results - list accumulating per-source summaries
 
 - name: "Set working vars for {{ current_vc_host }}"
   ansible.builtin.set_fact:
@@ -59,7 +59,7 @@
   ansible.builtin.set_fact:
     snapshot_results: >-
       {{ snapshot_results + [{
-           'vcenter':   current_vc_host,
+           'source':    current_vc_host,
            'total':     _vms | length,
            'succeeded': _job_results.results
                         | default([])
