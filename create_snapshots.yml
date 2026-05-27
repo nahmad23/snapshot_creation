@@ -71,6 +71,45 @@
       ansible.builtin.set_fact:
         vcenter_hosts: "{{ vcenter_vms_all | map(attribute='vcenter') | unique | list | sort }}"
 
+    # -------------------------------------------------------------------------
+    # Install Azure Python SDK dependencies when Azure VMs are present
+    # -------------------------------------------------------------------------
+    - name: Find Azure collection requirements file
+      ansible.builtin.find:
+        paths:
+          - "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/azure/azcollection"
+          - /usr/share/ansible/collections/ansible_collections/azure/azcollection
+          - /usr/lib/python3/dist-packages/ansible_collections/azure/azcollection
+        patterns: "requirements-azure.txt"
+        recurse: false
+      register: az_req_file
+      when: azure_vms | length > 0
+
+    - name: Install Azure Python SDK from collection requirements file
+      ansible.builtin.pip:
+        requirements: "{{ az_req_file.files[0].path }}"
+        extra_args: "--quiet"
+      when:
+        - azure_vms | length > 0
+        - az_req_file.files | default([]) | length > 0
+
+    - name: Install core Azure Python SDK packages (fallback if requirements file not found)
+      ansible.builtin.pip:
+        name:
+          - msrestazure
+          - azure-mgmt-compute>=21.0.0
+          - azure-mgmt-resource>=21.0.0
+          - azure-mgmt-network>=19.0.0
+          - azure-mgmt-storage>=19.0.0
+          - azure-common
+          - azure-identity
+          - azure-core
+        state: present
+        extra_args: "--quiet"
+      when:
+        - azure_vms | length > 0
+        - az_req_file.files | default([]) | length == 0
+
     - name: Show platforms and counts detected in CSV
       ansible.builtin.debug:
         msg:
