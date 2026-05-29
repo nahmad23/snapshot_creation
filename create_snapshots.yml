@@ -88,7 +88,7 @@
     - name: Install Azure Python SDK from collection requirements file
       ansible.builtin.pip:
         requirements: "{{ az_req_file.files[0].path }}"
-        extra_args: "--quiet"
+        extra_args: "--quiet --break-system-packages"
       when:
         - azure_vms | length > 0
         - az_req_file.files | default([]) | length > 0
@@ -105,7 +105,7 @@
           - azure-identity
           - azure-core
         state: present
-        extra_args: "--quiet"
+        extra_args: "--quiet --break-system-packages"
       when:
         - azure_vms | length > 0
         - az_req_file.files | default([]) | length == 0
