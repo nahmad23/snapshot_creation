@@ -9,13 +9,18 @@
 #   snapshot_results - list accumulating per-source summaries
 #
 # For each Azure VM the playbook:
-#   1. Queries azure_rm_virtualmachine_info to find the OS managed disk ID
-#   2. Creates an azure_rm_snapshot from that disk
+#   1. Queries azure_rm_resource_info (ARM API) to get the full storageProfile
+#      including the OS managed disk ID — azure_rm_virtualmachine_info does not
+#      return storage_profile in older collection versions.
+#   2. Creates an azure_rm_snapshot from that disk.
 
-- name: Get Azure VM info (OS disk ID lookup)
-  azure.azcollection.azure_rm_virtualmachine_info:
+- name: Get Azure VM details via ARM API (includes storageProfile + managed disk ID)
+  azure.azcollection.azure_rm_resource_info:
     resource_group:  "{{ item.resource_group }}"
-    name:            "{{ item.vm_name }}"
+    provider:        Microsoft.Compute
+    resource_type:   virtualMachines
+    resource_name:   "{{ item.vm_name }}"
+    api_version:     "2023-03-01"
     subscription_id: "{{ azure_creds.subscription_id }}"
     tenant:          "{{ azure_creds.tenant }}"
     client_id:       "{{ azure_creds.client_id }}"
@@ -31,14 +36,14 @@
   azure.azcollection.azure_rm_snapshot:
     resource_group:  "{{ item.item.resource_group }}"
     name:            "{{ snap_name }}-{{ item.item.vm_name }}"
-    location:        "{{ item.vms[0].location }}"
+    location:        "{{ item.response[0].location }}"
     subscription_id: "{{ azure_creds.subscription_id }}"
     tenant:          "{{ azure_creds.tenant }}"
     client_id:       "{{ azure_creds.client_id }}"
     secret:          "{{ azure_creds.secret }}"
     creation_data:
       create_option: Copy
-      source_id: "{{ item.vms[0].storage_profile.os_disk.managed_disk.id }}"
+      source_id: "{{ item.response[0].properties.storageProfile.osDisk.managedDisk.id }}"
     tags:
       snapshot_name: "{{ snap_name }}"
       source_vm:     "{{ item.item.vm_name }}"
@@ -48,9 +53,21 @@
     label: "{{ item.item.vm_name }}"
   when:
     - not item.failed
-    - item.vms | default([]) | length > 0
+    - item.response | default([]) | length > 0
+    - item.response[0].properties.storageProfile.osDisk.managedDisk.id is defined
   ignore_errors: true
   register: az_snap_results
+
+- name: Warn about Azure VMs skipped due to missing managed disk
+  ansible.builtin.debug:
+    msg: "SKIPPED (no managed OS disk): {{ item.item.vm_name }}"
+  loop: "{{ az_vm_info.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.vm_name }}"
+  when:
+    - not item.failed
+    - item.response | default([]) | length > 0
+    - item.response[0].properties.storageProfile.osDisk.managedDisk.id is not defined
 
 - name: Build Azure snapshot summary
   ansible.builtin.set_fact:
@@ -69,13 +86,15 @@
           | map(attribute='item.item.vm_name')
           | list)
          + (az_vm_info.results
+            | default([])
             | selectattr('failed', 'equalto', true)
             | map(attribute='item.vm_name')
             | list)
          + (az_vm_info.results
+            | default([])
             | selectattr('failed', 'equalto', false)
-            | selectattr('vms', 'defined')
-            | selectattr('vms', 'equalto', [])
+            | selectattr('response', 'defined')
+            | selectattr('response', 'equalto', [])
             | map(attribute='item.vm_name')
             | list) }}
 
