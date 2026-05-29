@@ -12,6 +12,7 @@
 #   1. azure_rm_virtualmachine_info  → get VM location + resource ID
 #   2. azure_rm_manageddisk_info     → list disks per resource group;
 #                                      match OS disk via managed_by == vm.id
+#                                      (both lowercased — Azure returns mixed case)
 #   3. azure_rm_snapshot             → create snapshot from the OS disk
 
 - name: Get Azure VM info (location and VM resource ID)
@@ -39,32 +40,17 @@
   register: az_rg_disks
   ignore_errors: true
 
-- name: DEBUG — show raw disk info keys returned by azure_rm_manageddisk_info
-  ansible.builtin.debug:
-    msg:
-      - "RG result keys : {{ az_rg_disks.results[0].keys() | list }}"
-      - "azure_managed_disk count : {{ az_rg_disks.results[0].azure_managed_disk | default([]) | length }}"
-      - "disks count              : {{ az_rg_disks.results[0].disks | default([]) | length }}"
-      - "First disk keys          : {{ (az_rg_disks.results[0].azure_managed_disk | default(az_rg_disks.results[0].disks | default([])))[0].keys() | list if (az_rg_disks.results[0].azure_managed_disk | default(az_rg_disks.results[0].disks | default([]))) | length > 0 else 'no disks returned' }}"
-      - "VM resource ID           : {{ az_vm_info.results[0].vms[0].id | default('N/A') }}"
-
-- name: Build VM-ID-to-OS-disk-ID lookup map
+- name: Build VM-ID-to-OS-disk-ID lookup map (lowercase keys to handle Azure mixed-case RG names)
   ansible.builtin.set_fact:
     az_os_disk_map: >-
-      {{ az_os_disk_map | default({}) | combine({item.1.managed_by: item.1.id}) }}
+      {{ az_os_disk_map | default({}) | combine({item.1.managed_by | lower: item.1.id}) }}
   loop: >-
     {{ az_rg_disks.results
-       | subelements('azure_managed_disk', skip_missing=True) }}
+       | subelements('ansible_info.azure_managed_disk', skip_missing=True) }}
   when:
     - not (item.0.failed | default(false))
     - item.1.managed_by is defined
-
-- name: DEBUG — show OS disk map built
-  ansible.builtin.debug:
-    msg:
-      - "az_os_disk_map : {{ az_os_disk_map | default({}) }}"
-      - "VM id to look up : {{ az_vm_info.results[0].vms[0].id | default('N/A') }}"
-      - "Disk found for VM : {{ (az_os_disk_map | default({}))[az_vm_info.results[0].vms[0].id | default('')] | default('NOT FOUND') }}"
+    - item.1.os_type is not none
 
 - name: Create OS disk snapshot for each Azure VM
   azure.azcollection.azure_rm_snapshot:
@@ -77,7 +63,7 @@
     secret:          "{{ azure_creds.secret }}"
     creation_data:
       create_option: Copy
-      source_id:     "{{ (az_os_disk_map | default({}))[item.vms[0].id] }}"
+      source_id:     "{{ (az_os_disk_map | default({}))[item.vms[0].id | lower] }}"
     tags:
       snapshot_name: "{{ snap_name }}"
       source_vm:     "{{ item.item.vm_name }}"
@@ -88,7 +74,7 @@
   when:
     - not item.failed
     - item.vms | default([]) | length > 0
-    - (az_os_disk_map | default({}))[item.vms[0].id] is defined
+    - (az_os_disk_map | default({}))[item.vms[0].id | lower] is defined
   ignore_errors: true
   register: az_snap_results
 
@@ -101,7 +87,7 @@
   when:
     - not item.failed
     - item.vms | default([]) | length > 0
-    - (az_os_disk_map | default({}))[item.vms[0].id] is not defined
+    - (az_os_disk_map | default({}))[item.vms[0].id | lower] is not defined
 
 - name: Build Azure snapshot summary
   ansible.builtin.set_fact:
