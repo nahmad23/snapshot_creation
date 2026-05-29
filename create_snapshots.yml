@@ -86,29 +86,31 @@
       when: azure_vms | length > 0
 
     - name: Install Azure Python SDK from collection requirements file
-      ansible.builtin.pip:
-        requirements: "{{ az_req_file.files[0].path }}"
-        extra_args: "--quiet --break-system-packages"
+      ansible.builtin.command:
+        cmd: >-
+          /usr/bin/python3 -m pip install --quiet --break-system-packages
+          -r {{ az_req_file.files[0].path }}
       when:
         - azure_vms | length > 0
         - az_req_file.files | default([]) | length > 0
+      changed_when: true
 
     - name: Install core Azure Python SDK packages (fallback if requirements file not found)
-      ansible.builtin.pip:
-        name:
-          - msrestazure
-          - azure-mgmt-compute>=21.0.0
-          - azure-mgmt-resource>=21.0.0
-          - azure-mgmt-network>=19.0.0
-          - azure-mgmt-storage>=19.0.0
-          - azure-common
-          - azure-identity
-          - azure-core
-        state: present
-        extra_args: "--quiet --break-system-packages"
+      ansible.builtin.command:
+        cmd: >-
+          /usr/bin/python3 -m pip install --quiet --break-system-packages
+          msrestazure
+          "azure-mgmt-compute>=21.0.0"
+          "azure-mgmt-resource>=21.0.0"
+          "azure-mgmt-network>=19.0.0"
+          "azure-mgmt-storage>=19.0.0"
+          azure-common
+          azure-identity
+          azure-core
       when:
         - azure_vms | length > 0
         - az_req_file.files | default([]) | length == 0
+      changed_when: true
 
     - name: Show platforms and counts detected in CSV
       ansible.builtin.debug:
