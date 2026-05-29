@@ -57,17 +57,25 @@
     _az_succeeded: >-
       {{ az_snap_results.results
          | default([])
+         | rejectattr('skipped', 'defined')
          | selectattr('failed', 'equalto', false)
          | map(attribute='item.item.vm_name')
          | list }}
     _az_failed: >-
       {{ (az_snap_results.results
           | default([])
+          | rejectattr('skipped', 'defined')
           | selectattr('failed', 'equalto', true)
           | map(attribute='item.item.vm_name')
           | list)
          + (az_vm_info.results
             | selectattr('failed', 'equalto', true)
+            | map(attribute='item.vm_name')
+            | list)
+         + (az_vm_info.results
+            | selectattr('failed', 'equalto', false)
+            | selectattr('vms', 'defined')
+            | selectattr('vms', 'equalto', [])
             | map(attribute='item.vm_name')
             | list) }}
 
