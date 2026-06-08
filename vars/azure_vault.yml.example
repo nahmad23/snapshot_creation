@@ -1,0 +1,12 @@
+# vars/azure_vault.yml.example
+# Copy this file to vars/azure_vault.yml, fill in real values,
+# then encrypt it with:
+#   ansible-vault encrypt vars/azure_vault.yml --vault-password-file ~/.vault_pass
+#
+# The real vars/azure_vault.yml must NEVER be committed to git.
+# Only this example template belongs in the repo.
+
+vault_azure_subscription_id: "YOUR_SUBSCRIPTION_ID"
+vault_azure_tenant_id:        "YOUR_TENANT_ID"
+vault_azure_client_id:        "YOUR_CLIENT_ID"
+vault_azure_secret:           "YOUR_CLIENT_SECRET"
