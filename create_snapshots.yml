@@ -11,26 +11,17 @@
 #   datacenter     - vCenter datacenter name  /  Azure region (e.g. eastus)
 #   vcenter        - vCenter hostname or IP   /  leave blank for Azure
 #   resource_group - leave blank for vCenter  /  Azure resource group name
+#
+# vCenter credentials are read from environment variables (no prompts):
+#   export VCENTER_USERNAME="administrator@vsphere.local"
+#   export VCENTER_PASSWORD="your_password"
 
 - name: Load CSV inventory and gather credentials
   hosts: localhost
   gather_facts: false
 
-  vars_prompt:
-    - name: snapshot_name
-      prompt: "Snapshot name"
-      private: false
-      default: "pre-change-snapshot"
-
-    - name: snapshot_description
-      prompt: "Snapshot description"
-      private: false
-      default: "Automated snapshot before change"
-
-    - name: csv_file
-      prompt: "Path to VM inventory CSV file"
-      private: false
-      default: "vm_inventory.csv"
+  vars:
+    csv_file: "vm_inventory.csv"
 
   tasks:
     - name: Validate CSV file exists
@@ -72,6 +63,27 @@
         vcenter_hosts: "{{ vcenter_vms_all | map(attribute='vcenter') | unique | list | sort }}"
 
     # -------------------------------------------------------------------------
+    # Validate vCenter credentials from environment variables
+    # -------------------------------------------------------------------------
+    - name: Abort if VCENTER_USERNAME env var is not set
+      ansible.builtin.fail:
+        msg: >
+          VCENTER_USERNAME environment variable is not set.
+          Export it before running: export VCENTER_USERNAME="administrator@vsphere.local"
+      when:
+        - vcenter_vms_all | length > 0
+        - lookup('env', 'VCENTER_USERNAME') == ''
+
+    - name: Abort if VCENTER_PASSWORD env var is not set
+      ansible.builtin.fail:
+        msg: >
+          VCENTER_PASSWORD environment variable is not set.
+          Export it before running: export VCENTER_PASSWORD="your_password"
+      when:
+        - vcenter_vms_all | length > 0
+        - lookup('env', 'VCENTER_PASSWORD') == ''
+
+    # -------------------------------------------------------------------------
     # Install Azure Python SDK dependencies when Azure VMs are present
     # -------------------------------------------------------------------------
     - name: Find Azure collection requirements file
@@ -85,30 +97,38 @@
       register: az_req_file
       when: azure_vms | length > 0
 
-    - name: Install Azure Python SDK from collection requirements file
-      ansible.builtin.pip:
-        requirements: "{{ az_req_file.files[0].path }}"
-        extra_args: "--quiet"
+    - name: Install Azure Python SDK from requirements file (skip OS-managed packages)
+      ansible.builtin.shell: |
+        grep -vE "^(argcomplete|packaging|pyparsing|six|python-dateutil|urllib3|certifi|chardet|idna|requests|setuptools|wheel|pip)" \
+          "{{ az_req_file.files[0].path }}" | \
+          {{ ansible_python_interpreter | default('/usr/bin/python3') }} \
+          -m pip install --quiet --break-system-packages --ignore-installed -r /dev/stdin
+      args:
+        executable: /bin/bash
       when:
         - azure_vms | length > 0
         - az_req_file.files | default([]) | length > 0
+      changed_when: true
 
-    - name: Install core Azure Python SDK packages (fallback if requirements file not found)
-      ansible.builtin.pip:
-        name:
-          - msrestazure
-          - azure-mgmt-compute>=21.0.0
-          - azure-mgmt-resource>=21.0.0
-          - azure-mgmt-network>=19.0.0
-          - azure-mgmt-storage>=19.0.0
-          - azure-common
-          - azure-identity
-          - azure-core
-        state: present
-        extra_args: "--quiet"
+    - name: Install Azure Python SDK packages (fallback if requirements file not found)
+      ansible.builtin.command:
+        cmd: >-
+          {{ ansible_python_interpreter | default('/usr/bin/python3') }}
+          -m pip install --quiet --break-system-packages --ignore-installed
+          msrestazure
+          azure-cli-core
+          "azure-mgmt-compute>=21.0.0"
+          "azure-mgmt-resource>=21.0.0"
+          "azure-mgmt-network>=19.0.0"
+          "azure-mgmt-storage>=19.0.0"
+          "azure-mgmt-managementgroups"
+          azure-common
+          azure-identity
+          azure-core
       when:
         - azure_vms | length > 0
         - az_req_file.files | default([]) | length == 0
+      changed_when: true
 
     - name: Show platforms and counts detected in CSV
       ansible.builtin.debug:
@@ -118,24 +138,26 @@
           - "  Azure VMs          : {{ azure_vms | length }}"
 
     # -------------------------------------------------------------------------
-    # vCenter credentials — prompted only when vCenter VMs are present
+    # Build credential maps
     # -------------------------------------------------------------------------
-    - name: "Prompt — vCenter username (shared for all vCenters)"
-      ansible.builtin.pause:
-        prompt: "vCenter username (e.g. administrator@vsphere.local)"
-      register: vc_user_input
-      when: vcenter_vms_all | length > 0
-
-    - name: "Prompt — vCenter password"
-      ansible.builtin.pause:
-        prompt: "vCenter password (used for all vCenters)"
-        echo: false
-      register: vc_pass_input
+    - name: Build vCenter credentials map from environment variables
+      ansible.builtin.set_fact:
+        vcenter_creds: >-
+          {{ vcenter_creds | default({}) | combine({
+               item: {
+                 'host':     item,
+                 'user':     lookup('env', 'VCENTER_USERNAME'),
+                 'password': lookup('env', 'VCENTER_PASSWORD')
+               }
+             }) }}
+      loop: "{{ vcenter_hosts }}"
+      loop_control:
+        label: "{{ item }}"
       no_log: true
       when: vcenter_vms_all | length > 0
 
     # -------------------------------------------------------------------------
-    # Azure credentials — prompted only when Azure VMs are present
+    # Azure credentials — prompted only when Azure VMs are present in CSV
     # -------------------------------------------------------------------------
     - name: "Prompt — Azure Subscription ID"
       ansible.builtin.pause:
@@ -163,25 +185,6 @@
       no_log: true
       when: azure_vms | length > 0
 
-    # -------------------------------------------------------------------------
-    # Build credential maps
-    # -------------------------------------------------------------------------
-    - name: Build vCenter credentials map (shared for all vCenters)
-      ansible.builtin.set_fact:
-        vcenter_creds: >-
-          {{ vcenter_creds | default({}) | combine({
-               item: {
-                 'host':     item,
-                 'user':     vc_user_input.user_input,
-                 'password': vc_pass_input.user_input
-               }
-             }) }}
-      loop: "{{ vcenter_hosts }}"
-      loop_control:
-        label: "{{ item }}"
-      no_log: true
-      when: vcenter_vms_all | length > 0
-
     - name: Build Azure credentials
       ansible.builtin.set_fact:
         azure_creds:
@@ -201,12 +204,16 @@
       loop: "{{ vcenter_hosts }}"
       when: vcenter_vms_all | length > 0
 
-    - name: Store snapshot metadata and initialise results list
+    - name: Generate snapshot name with timestamp
       ansible.builtin.set_fact:
-        snap_name: "{{ snapshot_name }}"
-        snap_desc: "{{ snapshot_description }}"
+        snap_name: "Security_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+        snap_desc: "Security snapshot — {{ lookup('pipe', 'date +%Y-%m-%d %H:%M:%S') }}"
         snapshot_results: []
         cacheable: false
+
+    - name: Show snapshot name that will be used
+      ansible.builtin.debug:
+        msg: "Snapshot name: {{ snap_name }}"
 
     - name: Inventory summary
       ansible.builtin.debug:
