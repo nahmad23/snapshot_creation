@@ -192,8 +192,8 @@
 
     - name: Generate snapshot name with timestamp
       ansible.builtin.set_fact:
-        snap_name: "Security_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
-        snap_desc: "Security snapshot — {{ lookup('pipe', 'date +%Y-%m-%d %H:%M:%S') }}"
+        snap_name: "Security_{{ now().strftime('%Y%m%d_%H%M%S') }}"
+        snap_desc: "Security snapshot — {{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
         snapshot_results: []
         cacheable: false
 
