@@ -2,8 +2,7 @@
 # Playbook: create_snapshots.yml
 # Supports both VMware vCenter VMs and Azure VMs from a single CSV.
 # vCenter hostnames and Azure resource groups come from the CSV —
-# no infrastructure prompts. Only credentials and snapshot details
-# are asked at runtime, and only for the platforms present in the CSV.
+# no infrastructure prompts. Credentials are stored in Ansible Vault.
 #
 # CSV columns required:
 #   vm_name        - VM display name (must match exactly in vCenter or Azure)
@@ -12,9 +11,11 @@
 #   vcenter        - vCenter hostname or IP   /  leave blank for Azure
 #   resource_group - leave blank for vCenter  /  Azure resource group name
 #
-# vCenter credentials are read from environment variables (no prompts):
-#   export VCENTER_USERNAME="administrator@vsphere.local"
-#   export VCENTER_PASSWORD="your_password"
+# Credentials are stored in group_vars/all/vault.yml (Ansible Vault encrypted).
+# Run with:
+#   ansible-playbook -i inventory.ini create_snapshots.yml --ask-vault-pass
+# Or using a vault password file:
+#   ansible-playbook -i inventory.ini create_snapshots.yml --vault-password-file .vault_pass
 
 - name: Load CSV inventory and gather credentials
   hosts: localhost
@@ -63,25 +64,25 @@
         vcenter_hosts: "{{ vcenter_vms_all | map(attribute='vcenter') | unique | list | sort }}"
 
     # -------------------------------------------------------------------------
-    # Validate vCenter credentials from environment variables
+    # Validate vCenter credentials loaded from Ansible Vault
     # -------------------------------------------------------------------------
-    - name: Abort if VCENTER_USERNAME env var is not set
+    - name: Abort if vault_vcenter_username is not set
       ansible.builtin.fail:
         msg: >
-          VCENTER_USERNAME environment variable is not set.
-          Export it before running: export VCENTER_USERNAME="administrator@vsphere.local"
+          vault_vcenter_username is not set in group_vars/all/vault.yml.
+          Edit with: ansible-vault edit group_vars/all/vault.yml
       when:
         - vcenter_vms_all | length > 0
-        - lookup('env', 'VCENTER_USERNAME') == ''
+        - vcenter_username | default('') == ''
 
-    - name: Abort if VCENTER_PASSWORD env var is not set
+    - name: Abort if vault_vcenter_password is not set
       ansible.builtin.fail:
         msg: >
-          VCENTER_PASSWORD environment variable is not set.
-          Export it before running: export VCENTER_PASSWORD="your_password"
+          vault_vcenter_password is not set in group_vars/all/vault.yml.
+          Edit with: ansible-vault edit group_vars/all/vault.yml
       when:
         - vcenter_vms_all | length > 0
-        - lookup('env', 'VCENTER_PASSWORD') == ''
+        - vcenter_password | default('') == ''
 
     # -------------------------------------------------------------------------
     # Install Azure Python SDK dependencies when Azure VMs are present
@@ -140,14 +141,14 @@
     # -------------------------------------------------------------------------
     # Build credential maps
     # -------------------------------------------------------------------------
-    - name: Build vCenter credentials map from environment variables
+    - name: Build vCenter credentials map from vault variables
       ansible.builtin.set_fact:
         vcenter_creds: >-
           {{ vcenter_creds | default({}) | combine({
                item: {
                  'host':     item,
-                 'user':     lookup('env', 'VCENTER_USERNAME'),
-                 'password': lookup('env', 'VCENTER_PASSWORD')
+                 'user':     vcenter_username,
+                 'password': vcenter_password
                }
              }) }}
       loop: "{{ vcenter_hosts }}"
@@ -157,41 +158,26 @@
       when: vcenter_vms_all | length > 0
 
     # -------------------------------------------------------------------------
-    # Azure credentials — prompted only when Azure VMs are present in CSV
+    # Azure credentials — loaded from Ansible Vault (no prompts)
     # -------------------------------------------------------------------------
-    - name: "Prompt — Azure Subscription ID"
-      ansible.builtin.pause:
-        prompt: "Azure Subscription ID"
-      register: az_sub_input
-      when: azure_vms | length > 0
+    - name: Abort if Azure vault credentials are not set
+      ansible.builtin.fail:
+        msg: >
+          Azure vault credentials are missing in group_vars/all/vault.yml.
+          Set vault_azure_subscription_id, vault_azure_tenant_id,
+          vault_azure_client_id, and vault_azure_secret.
+          Edit with: ansible-vault edit group_vars/all/vault.yml
+      when:
+        - azure_vms | length > 0
+        - azure_subscription_id | default('') == ''
 
-    - name: "Prompt — Azure Tenant ID"
-      ansible.builtin.pause:
-        prompt: "Azure Tenant ID"
-      register: az_tenant_input
-      when: azure_vms | length > 0
-
-    - name: "Prompt — Azure Client ID (Service Principal)"
-      ansible.builtin.pause:
-        prompt: "Azure Client ID (Service Principal)"
-      register: az_client_input
-      when: azure_vms | length > 0
-
-    - name: "Prompt — Azure Client Secret"
-      ansible.builtin.pause:
-        prompt: "Azure Client Secret"
-        echo: false
-      register: az_secret_input
-      no_log: true
-      when: azure_vms | length > 0
-
-    - name: Build Azure credentials
+    - name: Build Azure credentials from vault variables
       ansible.builtin.set_fact:
         azure_creds:
-          subscription_id: "{{ az_sub_input.user_input }}"
-          tenant:          "{{ az_tenant_input.user_input }}"
-          client_id:       "{{ az_client_input.user_input }}"
-          secret:          "{{ az_secret_input.user_input }}"
+          subscription_id: "{{ azure_subscription_id }}"
+          tenant:          "{{ azure_tenant_id }}"
+          client_id:       "{{ azure_client_id }}"
+          secret:          "{{ azure_secret }}"
       no_log: true
       when: azure_vms | length > 0
 

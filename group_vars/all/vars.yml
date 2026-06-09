@@ -1,0 +1,12 @@
+---
+# group_vars/all/vars.yml
+# References vault-encrypted variables from vault.yml.
+# This file is safe to commit. vault.yml must NEVER be committed unencrypted.
+
+vcenter_username: "{{ vault_vcenter_username }}"
+vcenter_password: "{{ vault_vcenter_password }}"
+
+azure_subscription_id: "{{ vault_azure_subscription_id | default('') }}"
+azure_tenant_id:       "{{ vault_azure_tenant_id       | default('') }}"
+azure_client_id:       "{{ vault_azure_client_id       | default('') }}"
+azure_secret:          "{{ vault_azure_secret          | default('') }}"

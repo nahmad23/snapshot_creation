@@ -1,0 +1,6 @@
+# Vault password file — never commit this
+.vault_pass
+
+# Only commit vault.yml when it is encrypted.
+# If you accidentally have a plaintext copy, add it here temporarily:
+# group_vars/all/vault.yml
