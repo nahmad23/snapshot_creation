@@ -49,24 +49,44 @@
   when:
     - not item.failed
     - item.vms | default([]) | length > 0
+    - item.vms[0].storage_profile is defined
+    - item.vms[0].storage_profile.os_disk is defined
+    - item.vms[0].storage_profile.os_disk.managed_disk is defined
+    - item.vms[0].storage_profile.os_disk.managed_disk.id is defined
   ignore_errors: true
   register: az_snap_results
+
+- name: Warn about Azure VMs skipped due to missing managed disk
+  ansible.builtin.debug:
+    msg: "SKIPPED (no managed OS disk): {{ item.item.vm_name }}"
+  loop: "{{ az_vm_info.results | default([]) | selectattr('failed', 'defined') | selectattr('failed', 'equalto', false) | list }}"
+  loop_control:
+    label: "{{ item.item.vm_name }}"
+  when:
+    - item.vms | default([]) | length > 0
+    - item.vms[0].storage_profile is not defined
+      or item.vms[0].storage_profile.os_disk is not defined
+      or item.vms[0].storage_profile.os_disk.managed_disk is not defined
 
 - name: Build Azure snapshot summary
   ansible.builtin.set_fact:
     _az_succeeded: >-
       {{ az_snap_results.results
          | default([])
+         | selectattr('failed', 'defined')
          | selectattr('failed', 'equalto', false)
          | map(attribute='item.item.vm_name')
          | list }}
     _az_failed: >-
       {{ (az_snap_results.results
           | default([])
+          | selectattr('failed', 'defined')
           | selectattr('failed', 'equalto', true)
           | map(attribute='item.item.vm_name')
           | list)
          + (az_vm_info.results
+            | default([])
+            | selectattr('failed', 'defined')
             | selectattr('failed', 'equalto', true)
             | map(attribute='item.vm_name')
             | list) }}
