@@ -16,6 +16,9 @@
   hosts: localhost
   gather_facts: false
 
+  vars_files:
+    - vars/azure_vault.yml
+
   vars_prompt:
     - name: snapshot_name
       prompt: "Snapshot name"
@@ -86,29 +89,31 @@
       when: azure_vms | length > 0
 
     - name: Install Azure Python SDK from collection requirements file
-      ansible.builtin.pip:
-        requirements: "{{ az_req_file.files[0].path }}"
-        extra_args: "--quiet"
+      ansible.builtin.command:
+        cmd: >-
+          /usr/bin/python3 -m pip install --quiet --break-system-packages
+          -r {{ az_req_file.files[0].path }}
       when:
         - azure_vms | length > 0
         - az_req_file.files | default([]) | length > 0
+      changed_when: true
 
     - name: Install core Azure Python SDK packages (fallback if requirements file not found)
-      ansible.builtin.pip:
-        name:
-          - msrestazure
-          - azure-mgmt-compute>=21.0.0
-          - azure-mgmt-resource>=21.0.0
-          - azure-mgmt-network>=19.0.0
-          - azure-mgmt-storage>=19.0.0
-          - azure-common
-          - azure-identity
-          - azure-core
-        state: present
-        extra_args: "--quiet"
+      ansible.builtin.command:
+        cmd: >-
+          /usr/bin/python3 -m pip install --quiet --break-system-packages
+          msrestazure
+          "azure-mgmt-compute>=21.0.0"
+          "azure-mgmt-resource>=21.0.0"
+          "azure-mgmt-network>=19.0.0"
+          "azure-mgmt-storage>=19.0.0"
+          azure-common
+          azure-identity
+          azure-core
       when:
         - azure_vms | length > 0
         - az_req_file.files | default([]) | length == 0
+      changed_when: true
 
     - name: Show platforms and counts detected in CSV
       ansible.builtin.debug:
@@ -135,35 +140,6 @@
       when: vcenter_vms_all | length > 0
 
     # -------------------------------------------------------------------------
-    # Azure credentials — prompted only when Azure VMs are present
-    # -------------------------------------------------------------------------
-    - name: "Prompt — Azure Subscription ID"
-      ansible.builtin.pause:
-        prompt: "Azure Subscription ID"
-      register: az_sub_input
-      when: azure_vms | length > 0
-
-    - name: "Prompt — Azure Tenant ID"
-      ansible.builtin.pause:
-        prompt: "Azure Tenant ID"
-      register: az_tenant_input
-      when: azure_vms | length > 0
-
-    - name: "Prompt — Azure Client ID (Service Principal)"
-      ansible.builtin.pause:
-        prompt: "Azure Client ID (Service Principal)"
-      register: az_client_input
-      when: azure_vms | length > 0
-
-    - name: "Prompt — Azure Client Secret"
-      ansible.builtin.pause:
-        prompt: "Azure Client Secret"
-        echo: false
-      register: az_secret_input
-      no_log: true
-      when: azure_vms | length > 0
-
-    # -------------------------------------------------------------------------
     # Build credential maps
     # -------------------------------------------------------------------------
     - name: Build vCenter credentials map (shared for all vCenters)
@@ -182,13 +158,13 @@
       no_log: true
       when: vcenter_vms_all | length > 0
 
-    - name: Build Azure credentials
+    - name: Build Azure credentials from vault
       ansible.builtin.set_fact:
         azure_creds:
-          subscription_id: "{{ az_sub_input.user_input }}"
-          tenant:          "{{ az_tenant_input.user_input }}"
-          client_id:       "{{ az_client_input.user_input }}"
-          secret:          "{{ az_secret_input.user_input }}"
+          subscription_id: "{{ vault_azure_subscription_id }}"
+          tenant:          "{{ vault_azure_tenant_id }}"
+          client_id:       "{{ vault_azure_client_id }}"
+          secret:          "{{ vault_azure_secret }}"
       no_log: true
       when: azure_vms | length > 0
 

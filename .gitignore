@@ -1,0 +1,3 @@
+# Ansible Vault — encrypted credentials (never commit real vault files)
+vars/azure_vault.yml
+.vault_pass

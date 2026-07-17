@@ -8,11 +8,14 @@
 #   snap_desc        - snapshot description
 #   snapshot_results - list accumulating per-source summaries
 #
-# For each Azure VM the playbook:
-#   1. Queries azure_rm_virtualmachine_info to find the OS managed disk ID
-#   2. Creates an azure_rm_snapshot from that disk
+# Flow:
+#   1. azure_rm_virtualmachine_info  → get VM location + resource ID
+#   2. azure_rm_manageddisk_info     → list disks per resource group;
+#                                      match OS disk via managed_by == vm.id
+#                                      (both lowercased — Azure returns mixed case)
+#   3. azure_rm_snapshot             → create snapshot from the OS disk
 
-- name: Get Azure VM info (OS disk ID lookup)
+- name: Get Azure VM info (location and VM resource ID)
   azure.azcollection.azure_rm_virtualmachine_info:
     resource_group:  "{{ item.resource_group }}"
     name:            "{{ item.vm_name }}"
@@ -25,7 +28,29 @@
     label: "{{ item.vm_name }}"
   register: az_vm_info
   ignore_errors: true
-  no_log: false
+
+- name: Get managed disks for each unique resource group
+  azure.azcollection.azure_rm_manageddisk_info:
+    resource_group:  "{{ item }}"
+    subscription_id: "{{ azure_creds.subscription_id }}"
+    tenant:          "{{ azure_creds.tenant }}"
+    client_id:       "{{ azure_creds.client_id }}"
+    secret:          "{{ azure_creds.secret }}"
+  loop: "{{ azure_vms | map(attribute='resource_group') | unique | list }}"
+  register: az_rg_disks
+  ignore_errors: true
+
+- name: Build VM-ID-to-OS-disk-ID lookup map (lowercase keys to handle Azure mixed-case RG names)
+  ansible.builtin.set_fact:
+    az_os_disk_map: >-
+      {{ az_os_disk_map | default({}) | combine({item.1.managed_by | lower: item.1.id}) }}
+  loop: >-
+    {{ az_rg_disks.results
+       | subelements('ansible_info.azure_managed_disk', skip_missing=True) }}
+  when:
+    - not (item.0.failed | default(false))
+    - item.1.managed_by is defined
+    - item.1.os_type is not none
 
 - name: Create OS disk snapshot for each Azure VM
   azure.azcollection.azure_rm_snapshot:
@@ -38,7 +63,7 @@
     secret:          "{{ azure_creds.secret }}"
     creation_data:
       create_option: Copy
-      source_id: "{{ item.vms[0].storage_profile.os_disk.managed_disk.id }}"
+      source_id:     "{{ (az_os_disk_map | default({}))[item.vms[0].id | lower] }}"
     tags:
       snapshot_name: "{{ snap_name }}"
       source_vm:     "{{ item.item.vm_name }}"
@@ -49,25 +74,47 @@
   when:
     - not item.failed
     - item.vms | default([]) | length > 0
+    - (az_os_disk_map | default({}))[item.vms[0].id | lower] is defined
   ignore_errors: true
   register: az_snap_results
+
+- name: Warn about VMs where no managed OS disk was found
+  ansible.builtin.debug:
+    msg: "SKIPPED (no managed OS disk found in resource group): {{ item.item.vm_name }}"
+  loop: "{{ az_vm_info.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.vm_name }}"
+  when:
+    - not item.failed
+    - item.vms | default([]) | length > 0
+    - (az_os_disk_map | default({}))[item.vms[0].id | lower] is not defined
 
 - name: Build Azure snapshot summary
   ansible.builtin.set_fact:
     _az_succeeded: >-
       {{ az_snap_results.results
          | default([])
+         | rejectattr('skipped', 'defined')
          | selectattr('failed', 'equalto', false)
          | map(attribute='item.item.vm_name')
          | list }}
     _az_failed: >-
       {{ (az_snap_results.results
           | default([])
+          | rejectattr('skipped', 'defined')
           | selectattr('failed', 'equalto', true)
           | map(attribute='item.item.vm_name')
           | list)
          + (az_vm_info.results
+            | default([])
             | selectattr('failed', 'equalto', true)
+            | map(attribute='item.vm_name')
+            | list)
+         + (az_vm_info.results
+            | default([])
+            | selectattr('failed', 'equalto', false)
+            | selectattr('vms', 'defined')
+            | selectattr('vms', 'equalto', [])
             | map(attribute='item.vm_name')
             | list) }}
 
